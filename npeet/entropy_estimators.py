@@ -154,6 +154,20 @@ def entropyd(sx, base=2):
     return np.sum(proba * np.log(1. / proba)) / log(base)
 
 
+def entropyd_jk(sx, k=10, base=2):
+    """ Discrete entropy estimator
+        sx is a list of samples
+
+        Jack-knifed with k-folding (k=len(x) for maximum accuracy)
+    """
+    N = len(sx)
+    r = N / k
+    h = entropyd(sx, base=base)
+    kfold_h = np.mean([entropyd(np.delete(sx, slice(int(r * j), int(r * (j+1))), axis=0),
+                                base=base) for j in range(k)])
+    return k * h - (k - 1) * kfold_h
+
+
 def midd(x, y, base=2):
     """ Discrete mutual information estimator
         Given a list of samples which can be any hashable object

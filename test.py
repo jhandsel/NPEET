@@ -114,6 +114,7 @@ x = [0, 0, 0, 0, 1, 1, 1, 1]
 y = [0, 1, 0, 1, 0, 1, 0, 1]
 z = [0, 1, 0, 1, 1, 0, 1, 0]
 print("H(x), H(y), H(z)", ee.entropyd(x), ee.entropyd(y), ee.entropyd(z))
+print("H(x), H(y), H(z)", ee.entropyd_jk(x), ee.entropyd_jk(y), ee.entropyd_jk(z))
 print("H(x:y), etc", ee.midd(x, y), ee.midd(z, y), ee.midd(x, z))
 print("H(x:y|z), etc", ee.cmidd(x, y, z), ee.cmidd(z, y, x), ee.cmidd(x, z, y))
 
