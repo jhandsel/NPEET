@@ -70,10 +70,15 @@ def mi(x, y, z=None, k=3, base=2, alpha=0):
     x = add_noise(x)
     y = add_noise(y)
     points = [x, y]
+    dx = x.shape[-1]
+    dy = y.shape[-1]
     if z is not None:
         z = np.asarray(z)
         z = z.reshape(z.shape[0], -1)
         points.append(z)
+        dz = z.shape[-1]
+    else:
+        dz = 0
     points = np.hstack(points)
     # Find nearest neighbors in joint space, p=inf means max-norm
     tree = build_tree(points)
@@ -81,13 +86,17 @@ def mi(x, y, z=None, k=3, base=2, alpha=0):
     if z is None:
         a, b, c, d = avgdigamma(x, dvec), avgdigamma(
             y, dvec), digamma(k), digamma(len(x))
-        if alpha > 0:
-            d += lnc_correction(tree, points, k, alpha)
+        xz = None
+        yz = None
     else:
         xz = np.c_[x, z]
         yz = np.c_[y, z]
         a, b, c, d = avgdigamma(xz, dvec), avgdigamma(
             yz, dvec), avgdigamma(z, dvec), digamma(k)
+    if alpha is None:
+        alpha = alpha_estimation(k, dx, dy, dz=dz)
+    if alpha > 0:
+        d += lnc_correction(k, alpha, tree, points, xz=xz, yz=yz)
     return (-a - b + c + d) / log(base)
 
 
@@ -118,27 +127,73 @@ def kldiv(x, xp, k=3, base=2):
     return (const + d * (np.log(nnp).mean() - np.log(nn).mean())) / log(base)
 
 
-def lnc_correction(tree, points, k, alpha):
+def lnc_correction(k, alpha, tree, points, xz=None, yz=None):
     e = 0
     n_sample = points.shape[0]
+
     for point in points:
         # Find k-nearest neighbors in joint space, p=inf means max norm
         knn = tree.query(point[None, :], k=k+1, return_distance=False)[0]
-        knn_points = points[knn]
-        # Substract mean of k-nearest neighbor points
-        knn_points = knn_points - knn_points[0]
-        # Calculate covariance matrix of k-nearest neighbor points, obtain eigen vectors
-        covr = knn_points.T @ knn_points / k
-        _, v = la.eig(covr)
-        # Calculate PCA-bounding box using eigen vectors
-        V_rect = np.log(np.abs(knn_points @ v).max(axis=0)).sum()
-        # Calculate the volume of original box
-        log_knn_dist = np.log(np.abs(knn_points).max(axis=0)).sum()
+        knn_points_xyz = points[knn]
+
+        log_V_rect_xyz = pca_volume(knn_points_xyz)
+        log_V_xyz = volume(knn_points_xyz)
+
+        if xz is not None and yz is not None:
+            knn_points_xz = xz[knn]
+            knn_points_yz = yz[knn]
+
+            log_V_rect_xz = pca_volume(knn_points_xz)
+            log_V_rect_yz = pca_volume(knn_points_yz)
+            log_V_xz = volume(knn_points_xz)
+            log_V_yz = volume(knn_points_yz)
+        else:
+            log_V_rect_xz = 0
+            log_V_rect_yz = 0
+            log_V_xz = 0
+            log_V_yz = 0
 
         # Perform local non-uniformity checking and update correction term
-        if V_rect < log_knn_dist + np.log(alpha):
-            e += (log_knn_dist - V_rect) / n_sample
-    return e
+        log_ratio = log_V_rect_xyz + log_V_xz + log_V_yz - \
+            (log_V_xyz + log_V_rect_xz + log_V_rect_yz)
+        if log_ratio < np.log(alpha):
+            e += - log_ratio
+    return e / n_sample
+
+
+def alpha_estimation(k, dx, dy, dz=0, N=int(5e5), eps=5e-3):
+    d = dx + dy + dz
+
+    a = []
+    points = np.random.uniform(size=(N, k, d))
+
+    for i in range(N):
+        knn_points_xyz = points[i, :, :]
+
+        log_V_rect_xyz = pca_volume(knn_points_xyz)
+        log_V_xyz = volume(knn_points_xyz)
+
+        if dz != 0:
+            knn_points_xz = points[i][:, np.r_[:dx, dx+dy:d]]
+            knn_points_yz = points[i, :, dx:]
+
+            log_V_rect_xz = pca_volume(knn_points_xz)
+            log_V_rect_yz = pca_volume(knn_points_yz)
+            log_V_xz = volume(knn_points_xz)
+            log_V_yz = volume(knn_points_yz)
+        else:
+            log_V_rect_xz = 0
+            log_V_rect_yz = 0
+            log_V_xz = 0
+            log_V_yz = 0
+
+        log_ratio = log_V_rect_xyz + log_V_xz + log_V_yz - \
+            (log_V_xyz + log_V_rect_xz + log_V_rect_yz)
+        a.append(log_ratio)
+
+    a = np.exp(np.array(a))
+    choice = int(np.ceil(eps*N))
+    return np.partition(a, choice - 1)[choice - 1]
 
 
 # DISCRETE ESTIMATORS
@@ -295,6 +350,22 @@ def build_tree(points):
     if points.shape[1] >= 20:
         return BallTree(points, metric='chebyshev')
     return KDTree(points, metric='chebyshev')
+
+
+def volume(knn_points):
+    return np.log(np.abs(knn_points).max(axis=0)).sum()
+
+
+def pca_volume(knn_points):
+    k = knn_points.shape[0]
+    # Substract mean of k-nearest neighbor points
+    knn_points = knn_points - knn_points[0]
+    # Calculate covariance matrix of k-nearest neighbors, get eigen vectors
+    covr = knn_points.T @ knn_points / k
+    _, v = la.eigh(covr)
+    # Calculate PCA-bounding box using eigen vectors
+    log_V_rect = volume(knn_points @ v)
+    return log_V_rect
 
 # TESTS
 
