@@ -10,6 +10,7 @@ import numpy.linalg as la
 from numpy import log
 from scipy.special import digamma
 from sklearn.neighbors import BallTree, KDTree
+from numba import njit
 
 # CONTINUOUS ESTIMATORS
 
@@ -159,11 +160,15 @@ def lnc_correction(k, alpha, tree, points, x, y, z=None):
     return e / n_sample
 
 
+@njit
 def alpha_estimation(k, dx, dy, dz=0, N=int(5e5), eps=5e-3):
     d = dx + dy + dz
 
-    a = []
-    points = np.random.uniform(size=(N, k, d))
+    a = np.empty(N)
+    points = np.random.rand(N, k, d)
+
+    if dz != 0:
+        x_sel = np.array([i for i in range(dx)] + [i for i in range(dx+dy, d)])
 
     for i in range(N):
         knn_points_xyz = points[i, :, :]
@@ -172,11 +177,10 @@ def alpha_estimation(k, dx, dy, dz=0, N=int(5e5), eps=5e-3):
 
         if dz != 0:
             knn_points_z = points[i, :, -dz:]
-            knn_points_x = points[i][:, np.r_[:dx, dx+dy:d]]
+            knn_points_x = points[i][:, x_sel]
 
             log_V_rect_z = pca_volume(knn_points_z)
         else:
-
             log_V_rect_z = 0
 
         log_V_rect_xyz = pca_volume(knn_points_xyz)
@@ -184,10 +188,10 @@ def alpha_estimation(k, dx, dy, dz=0, N=int(5e5), eps=5e-3):
         log_V_rect_y = pca_volume(knn_points_y)
 
         log_ratio = log_V_rect_xyz + log_V_rect_z - \
-            (log_V_rect_x + log_V_rect_y)
-        a.append(log_ratio)
+                    (log_V_rect_x + log_V_rect_y)
+        a[i] = log_ratio
 
-    a = np.exp(np.array(a))
+    a = np.exp(a)
     choice = int(np.ceil(eps*N))
     return np.partition(a, choice - 1)[choice - 1]
 
@@ -348,17 +352,23 @@ def build_tree(points):
     return KDTree(points, metric='chebyshev')
 
 
+@njit
 def volume(knn_points):
-    return np.log(np.abs(knn_points).max(axis=0)).sum()
+    knn_points = np.abs(knn_points)
+    n, d = knn_points.shape
+    res = np.empty(d)
+    for i in range(d):
+        res[i] = knn_points[:, i].max()
+    return np.log(res).sum()
 
-
+@njit
 def pca_volume(knn_points):
     k = knn_points.shape[0]
     # Substract mean of k-nearest neighbor points
     knn_points = knn_points - knn_points[0]
     # Calculate covariance matrix of k-nearest neighbors, get eigen vectors
     covr = knn_points.T @ knn_points / k
-    _, v = la.eigh(covr)
+    v = np.ascontiguousarray(la.eigh(covr)[1])
     # Calculate PCA-bounding box using eigen vectors
     log_V_rect = volume(knn_points @ v)
     return log_V_rect
