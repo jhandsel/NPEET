@@ -66,16 +66,18 @@ def mi(x, y, z=None, k=3, base=2, alpha=0):
     """
     assert len(x) == len(y), "Arrays should have same length"
     assert k <= len(x) - 1, "Set k smaller than num. samples - 1"
+    n = len(x)
     x, y = np.asarray(x), np.asarray(y)
-    x, y = x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+    x, y = x.reshape(n, -1), y.reshape(n, -1)
     x = add_noise(x)
     y = add_noise(y)
     points = [x, y]
     dx = x.shape[-1]
     dy = y.shape[-1]
     if z is not None:
+        assert len(z) == n, "Arrays should have same length"
         z = np.asarray(z)
-        z = z.reshape(z.shape[0], -1)
+        z = z.reshape(n, -1)
         points.append(z)
         dz = z.shape[-1]
     else:
@@ -92,6 +94,48 @@ def mi(x, y, z=None, k=3, base=2, alpha=0):
         yz = np.c_[y, z]
         a, b, c, d = avgdigamma(xz, dvec), avgdigamma(
             yz, dvec), avgdigamma(z, dvec), digamma(k)
+    if alpha is None:
+        alpha = alpha_estimation(k, dx, dy, dz=dz)
+    if alpha > 0:
+        d += lnc_correction(k, alpha, tree, points, x, y, z=z)
+    return (-a - b + c + d) / log(base)
+
+
+def mi2(x, y, z=None, k=3, base=2, alpha=0):
+    """ Mutual information of x and y (conditioned on z if z is not None)
+        x, y should be a list of vectors, e.g. x = [[1.3], [3.7], [5.1], [2.4]]
+        if x is a one-dimensional scalar and we have four samples
+    """
+    assert len(x) == len(y), "Arrays should have same length"
+    assert k <= len(x) - 1, "Set k smaller than num. samples - 1"
+    n = len(x)
+    x, y = np.asarray(x), np.asarray(y)
+    x, y = x.reshape(n, -1), y.reshape(n, -1)
+    x = add_noise(x)
+    y = add_noise(y)
+    points = [x, y]
+    dx = x.shape[-1]
+    dy = y.shape[-1]
+    if z is not None:
+        assert len(z) == n, "Arrays should have same length"
+        z = np.asarray(z)
+        z = z.reshape(n, -1)
+        points.append(z)
+        dz = z.shape[-1]
+    else:
+        dz = 0
+    points = np.hstack(points)
+    # Find nearest neighbors in joint space, p=inf means max-norm
+    tree = build_tree(points)
+    idx = query_neighbors_index(tree, points, k)
+    if z is None:
+        a, b, c, d = avgdigamma2(x, idx), avgdigamma2(
+            y, idx), digamma(k) - 1/k, digamma(len(x))
+    else:
+        xz = np.c_[x, z]
+        yz = np.c_[y, z]
+        a, b, c, d = avgdigamma2(xz, idx), avgdigamma2(
+            yz, idx), avgdigamma2(z, idx), digamma(k) - 1/k
     if alpha is None:
         alpha = alpha_estimation(k, dx, dy, dz=dz)
     if alpha > 0:
@@ -330,7 +374,15 @@ def add_noise(x, intens=1e-10):
 
 
 def query_neighbors(tree, x, k):
-    return tree.query(x, k=k + 1)[0][:, k]
+    return tree.query(x, k=k + 1, dualtree=True)[0][:, k]
+
+
+def query_neighbors_index(tree, x, k):
+    return tree.query(x, k=k + 1, dualtree=True, return_distance=False)[:, 1:]
+
+
+def marginal_distance(points, idx):
+    return np.abs(points[idx] - points[:, None, :]).max(axis=(1, 2))
 
 
 def count_neighbors(tree, x, r):
@@ -343,6 +395,15 @@ def avgdigamma(points, dvec):
     tree = build_tree(points)
     dvec = dvec - 1e-15
     num_points = count_neighbors(tree, points, dvec)
+    return np.mean(digamma(num_points))
+
+
+def avgdigamma2(points, idx):
+    # This part finds number of neighbors in some radius in the marginal space
+    # returns expectation value of <psi(nx)>
+    tree = build_tree(points)
+    dvec = marginal_distance(points, idx)
+    num_points = count_neighbors(tree, points, dvec) - 1
     return np.mean(digamma(num_points))
 
 
